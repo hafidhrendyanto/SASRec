@@ -29,6 +29,7 @@ parser.add_argument('--num_epochs', default=201, type=int)
 parser.add_argument('--num_heads', default=1, type=int)
 parser.add_argument('--dropout_rate', default=0.5, type=float)
 parser.add_argument('--l2_emb', default=0.0, type=float)
+parser.add_argument('--original_source', action="store_true")
 
 args = parser.parse_args()
 learning_rate = float(args.lr)
@@ -59,14 +60,40 @@ wandb.define_metric("epoch/epoch")
 # set all epoch-wise metrics to be logged against epoch.
 wandb.define_metric("epoch/*", step_metric="epoch/epoch")
 
-dataset = data_partition(args.dataset)
-[user_train, user_valid, user_test, usernum, itemnum] = dataset
+if args.original_source:
+    print("Training using original dataset from movielens web")
+
+    with open(r"../sasrec [Kang & McAuley, 2018]/datasets/%s/training_sequences.json" % (args.dataset), "r") as json_file:
+        user_train = json.load(json_file)
+        user_train = {int(uid): sequence for uid, sequence in user_train.items()}
+    with open(r"../sasrec [Kang & McAuley, 2018]/datasets/%s/validation_sequences.json" % (args.dataset), "r") as json_file:
+        user_valid = json.load(json_file)
+        user_valid = {int(uid): sequence for uid, sequence in user_valid.items()}
+    with open(r"../sasrec [Kang & McAuley, 2018]/datasets/%s/test_sequences.json" % (args.dataset), "r") as json_file:
+        user_test = json.load(json_file)
+        user_test = {int(uid): sequence for uid, sequence in user_test.items()}
+
+    itemnum = 0
+    usernum = max(user_train.keys())
+    for sequences in [user_train, user_valid, user_test]:
+        for sequence in sequences.values():
+            itemnum = max(max(sequence), itemnum)
+
+    dataset = [user_train, user_valid, user_test, usernum, itemnum]
+else:
+    dataset = data_partition(args.dataset)
+    [user_train, user_valid, user_test, usernum, itemnum] = dataset
+
 num_batch = len(user_train) / args.batch_size
 cc = 0.0
 for u in user_train:
     cc += len(user_train[u])
-print 'number of batches: %.2f' % (num_batch)
-print 'average sequence length: %.2f' % (cc / len(user_train))
+
+print(usernum, itemnum)
+print('number of sequences: %d' % len(user_train))
+print('number of batches: %d' % (num_batch))
+print('average sequence length: %.2f' % (cc / len(user_train)))
+print(user_train[1])
 
 # dump training data for archive
 with open("data/user_train.json", "w") as json_file:
@@ -123,7 +150,7 @@ try:
             metric_aggregate["epoch/val_hitrate@10"] = t_valid[1]
             metric_aggregate["epoch/val_ndcg@10"] = t_valid[0]
             metric_aggregate["epoch/test_hitrate@10"] = t_test[1]
-            metric_aggregate["epoch/val_ndcg@10"] = t_test[0]
+            metric_aggregate["epoch/test_ndcg@10"] = t_test[0]
 
         wandb.log(metric_aggregate)
 except:
