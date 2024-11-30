@@ -3,7 +3,9 @@ import copy
 import random
 import numpy as np
 from collections import defaultdict
+from multiprocessing import Process, Queue
 
+from sampler import DatasetSampler
 
 def data_partition(fname):
     usernum = 0
@@ -36,95 +38,121 @@ def data_partition(fname):
             user_test[user].append(User[user][-1])
     return [user_train, user_valid, user_test, usernum, itemnum]
 
+def evaluate(model, dataset, batch_size, max_sequence_length, kernel_session, mode="validation"):
+    if mode not in ["test", "validation"]:
+        raise Exception("mode needs to be either test or validation")
+    [training_sequence, validation_sequence, test_sequence, usernum, itemnum] = copy.deepcopy(dataset)
 
-def evaluate(model, dataset, args, sess):
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    disounted_cumulative_gains = 0.0
+    true_positives = 0.0
+    validated_user = 0.0
 
-    NDCG = 0.0
-    HT = 0.0
-    valid_user = 0.0
+    sampler = DatasetSampler(
+        training_sequence=training_sequence,
+        validation_sequence=validation_sequence,
+        test_sequence=test_sequence,
+        usernum=usernum,
+        itemnum=itemnum,
+        batch_size=batch_size,
+        max_sequence_length=max_sequence_length,
+        mode=mode,
+        nworkers=5
+    )
 
-    if usernum>10000:
-        users = random.sample(xrange(1, usernum + 1), 10000)
+    while not sampler.check_finish():
+        uid_list, input_sequences, prediction_pools = sampler.next_batch()
+        score = model.predict(kernel_session, uid_list, input_sequences, prediction_pools) # (batch_size, maxlen) for both inputh_sequences and prediction_pools
+        inverse_score = -score
+
+        # argsort twice give you rank
+        item_rankings = inverse_score.argsort().argsort()
+        positive_item_rankings = item_rankings[:, 0]
+
+        for positive_item_rank in positive_item_rankings:
+            validated_user += 1
+
+            if positive_item_rank < 10:
+                disounted_cumulative_gains += 1 / np.log2(positive_item_rank + 2)
+                true_positives += 1
+            if validated_user % 100 == 0:
+                sys.stdout.write('. ')
+                sys.stdout.flush()
+
+        if validated_user >= usernum:
+            break
+
+    # NDCG = DCG / IDCG. 
+    # Since we only have one positive sample and ideally it is ranked at the top then IDCG = # All Positive Sample = # Sequences = # Users
+    normalized_discounted_cumulative_gain = disounted_cumulative_gains / validated_user 
+
+    # Hit Rate = # True Positives / # All Positive Sample
+    hit_rate = true_positives / validated_user
+
+    return normalized_discounted_cumulative_gain, hit_rate
+
+def original_evaluate(model, dataset, batch_size, max_sequence_length, kernel_session, mode="validation"):
+    """
+    Parameters
+    ----------
+    final_test : bool, optional
+        Wheter the target is test_sequence or validation_sequence
+    """
+    [training_sequence, validation_sequence, test_sequence, usernum, itemnum] = copy.deepcopy(dataset)
+
+    disounted_cumulative_gains = 0.0
+    true_positives = 0.0
+    validated_user = 0.0
+
+    if usernum > 10000:
+        users = random.sample(range(1, usernum + 1), 10000)
     else:
-        users = xrange(1, usernum + 1)
-    for u in users:
+        users = range(1, usernum + 1)
 
-        if len(train[u]) < 1 or len(test[u]) < 1: continue
+    for uid in users:
+        if len(training_sequence[uid]) < 1 or len(validation_sequence[uid]) < 1 or len(test_sequence[uid]) < 1: continue
 
-        seq = np.zeros([args.maxlen], dtype=np.int32)
-        idx = args.maxlen - 1
-        seq[idx] = valid[u][0]
-        idx -= 1
-        for i in reversed(train[u]):
-            seq[idx] = i
-            idx -= 1
-            if idx == -1: break
-        rated = set(train[u])
-        rated.add(0)
-        item_idx = [test[u][0]]
+        # define input sequence for the current user
+        input_sequence = np.zeros([max_sequence_length], dtype=np.int32)
+        current_idx = max_sequence_length - 1
+        if mode == "test":
+            input_sequence[current_idx] = validation_sequence[uid][0]
+            current_idx -= 1
+        for current_item in reversed(training_sequence[uid]):
+            input_sequence[current_idx] = current_item
+            current_idx -= 1
+            if current_idx == -1: break
+
+        interacted_items = set(training_sequence[uid])
+        interacted_items.add(0)
+        if mode == "test":
+            prediction_pools = [test_sequence[uid][0]]
+        else:
+            prediction_pools = [validation_sequence[uid][0]]
         for _ in range(100):
-            t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
-            item_idx.append(t)
+            sampled_negative = np.random.randint(1, itemnum + 1)
+            while sampled_negative in interacted_items: sampled_negative = np.random.randint(1, itemnum + 1)
+            prediction_pools.append(sampled_negative)
 
-        predictions = -model.predict(sess, [u], [seq], item_idx)
+        predictions = -model.predict(kernel_session, [uid], [input_sequence], prediction_pools)
         predictions = predictions[0]
 
-        rank = predictions.argsort().argsort()[0]
+        # argsort twice give you rank
+        positive_item_rank = predictions.argsort().argsort()[0]
 
-        valid_user += 1
+        validated_user += 1
 
-        if rank < 10:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
-        if valid_user % 100 == 0:
-            print '.',
+        if positive_item_rank < 10:
+            disounted_cumulative_gains += 1 / np.log2(positive_item_rank + 2)
+            true_positives += 1
+        if validated_user % 100 == 0:
+            sys.stdout.write('. ')
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    # NDCG = DCG / IDCG. 
+    # Since we only have one positive sample and ideally it is ranked at the top then IDCG = # All Positive Sample = # Sequences = # Users
+    normalized_discounted_cumulative_gain = disounted_cumulative_gains / validated_user 
 
+    # Hit Rate = # True Positives / # All Positive Sample
+    hit_rate = true_positives / validated_user
 
-def evaluate_valid(model, dataset, args, sess):
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-
-    NDCG = 0.0
-    valid_user = 0.0
-    HT = 0.0
-    if usernum>10000:
-        users = random.sample(xrange(1, usernum + 1), 10000)
-    else:
-        users = xrange(1, usernum + 1)
-    for u in users:
-        if len(train[u]) < 1 or len(valid[u]) < 1: continue
-
-        seq = np.zeros([args.maxlen], dtype=np.int32)
-        idx = args.maxlen - 1
-        for i in reversed(train[u]):
-            seq[idx] = i
-            idx -= 1
-            if idx == -1: break
-
-        rated = set(train[u])
-        rated.add(0)
-        item_idx = [valid[u][0]]
-        for _ in range(100):
-            t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
-            item_idx.append(t)
-
-        predictions = -model.predict(sess, [u], [seq], item_idx)
-        predictions = predictions[0]
-
-        rank = predictions.argsort().argsort()[0]
-
-        valid_user += 1
-
-        if rank < 10:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
-        if valid_user % 100 == 0:
-            print '.',
-            sys.stdout.flush()
-
-    return NDCG / valid_user, HT / valid_user
+    return normalized_discounted_cumulative_gain, hit_rate

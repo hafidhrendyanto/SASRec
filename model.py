@@ -73,11 +73,21 @@ class Model():
         neg_emb = tf.nn.embedding_lookup(item_emb_table, neg)
         seq_emb = tf.reshape(self.seq, [tf.shape(self.input_seq)[0] * args.maxlen, args.hidden_units])
 
-        self.test_item = tf.placeholder(tf.int32, shape=(101))
-        test_item_emb = tf.nn.embedding_lookup(item_emb_table, self.test_item)
-        self.test_logits = tf.matmul(seq_emb, tf.transpose(test_item_emb))
-        self.test_logits = tf.reshape(self.test_logits, [tf.shape(self.input_seq)[0], args.maxlen, 101])
-        self.test_logits = self.test_logits[:, -1, :]
+        self.test_item = tf.placeholder(tf.int32, shape=(None, 101))
+        test_item_emb = tf.nn.embedding_lookup(item_emb_table, self.test_item) # (bathc, 101, 50)
+        # print("KAPOW!")
+        # print(self.seq)
+        # print(seq_emb)
+        # print(test_item_emb)
+        last_seq_emb = self.seq[:, -1:, :] # (batch, 1, 50)
+        self.test_logits = tf.matmul(last_seq_emb, tf.transpose(test_item_emb, [0, 2, 1])) # (batch, 1, 101)
+        self.test_logits = self.test_logits[:, -1, :] # (batch, 101)
+        # self.test_logits = tf.matmul(seq_emb, tf.transpose(test_item_emb))
+        # print(self.test_logits)
+        # self.test_logits = tf.reshape(self.test_logits, [tf.shape(self.input_seq)[0], args.maxlen, 101])
+        # print(self.test_logits)
+        # self.test_logits = self.test_logits[:, -1, :]
+        # print(self.test_logits)
 
         # prediction layer
         self.pos_logits = tf.reduce_sum(pos_emb * seq_emb, -1)
