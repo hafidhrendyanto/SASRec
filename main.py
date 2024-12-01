@@ -112,6 +112,7 @@ kernel_session = tf.Session(config=config)
 
 sampler = DatasetSampler(
     training_sequence=training_sequence, 
+    validation_sequence=validation_sequence,
     usernum=usernum, 
     itemnum=itemnum, 
     batch_size=args.batch_size, 
@@ -128,15 +129,27 @@ for epoch in tqdm(range(1, args.num_epochs + 1), total=args.num_epochs, ncols=70
         "epoch/learning_rate": learning_rate
     }
 
+    loss_aggregate = 0.0
+    valid_loss_aggregate = 0.0
     for step in range(num_batch):
-        user_ids, input_sequences, target_sequence, negative_sample = sampler.next_batch()
-        auc, loss, _ = kernel_session.run(
-            [model.auc, model.loss, model.train_op],
-            {model.uid_vector: user_ids, model.input_sequences: input_sequences, model.target_sequence: target_sequence, model.negative_sample: negative_sample, model.is_training: True}
+        user_ids, input_sequences, target_sequence, validation_sequence, negative_sample = sampler.next_batch()
+        auc, loss, valid_loss, _ = kernel_session.run(
+            [model.auc, model.loss, model.valid_loss, model.train_op],
+            {
+                model.uid_vector: user_ids, 
+                model.input_sequences: input_sequences, 
+                model.target_sequence: target_sequence,
+                model.negative_sample: negative_sample, 
+                model.valid_sequences: validation_sequence,
+                model.is_training: True
+            }
         )
 
-    metric_aggregate["epoch/loss"] = float(loss)
-    # TODO: add validation loss
+        loss_aggregate += float(loss)
+        valid_loss_aggregate += float(valid_loss) 
+
+    metric_aggregate["epoch/loss"] = loss_aggregate / float(num_batch)
+    metric_aggregate["epoch/val_loss"] = valid_loss_aggregate / float(num_batch)
 
     if epoch % 5 == 0 or epoch in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
         validation_metrics = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="validation")

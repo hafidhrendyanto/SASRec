@@ -8,6 +8,7 @@ class Model():
         self.input_sequences = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
         self.target_sequence = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
         self.negative_sample = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
+        self.valid_sequences = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
         input_mask = tf.to_float(tf.not_equal(self.input_sequences, 0))[:, :, tf.newaxis] # [B, T, 1]
 
         with tf.variable_scope("SASRec", reuse=reuse):
@@ -75,26 +76,35 @@ class Model():
 
         current_target_sequence = self.target_sequence # [B, T]
         current_negative_sample = self.negative_sample # [B, T]
+        current_valid_sequences = self.valid_sequences # [B, T]
         current_target_sequence = tf.reshape(current_target_sequence, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
         current_negative_sample = tf.reshape(current_negative_sample, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
+        current_valid_sequences = tf.reshape(current_valid_sequences, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
         target_embedding = tf.nn.embedding_lookup(item_embedding_table, current_target_sequence) # [B*T, D]
         negative_embedding = tf.nn.embedding_lookup(item_embedding_table, current_negative_sample) # [B*T, D]
+        valid_embedding = tf.nn.embedding_lookup(item_embedding_table, current_valid_sequences) # [B*T, D]
         sequence_embedding = tf.reshape(self.current_sequence_embedding, [tf.shape(self.input_sequences)[0] * args.maxlen, args.hidden_units]) # flatten [B, T, D] to [B*T, D]
 
         # prediction layer
         self.positive_logits = tf.reduce_sum(target_embedding * sequence_embedding, -1) # reduce_sum([B, T, D]) => [B, T]
         self.negative_logits = tf.reduce_sum(negative_embedding * sequence_embedding, -1) # reduce_sum([B, T, D]) => [B, T]
+        self.valid_logits = tf.reduce_sum(valid_embedding * sequence_embedding, -1) # reduce_sum([B, T, D]) => [B, T]
 
         # Create target_mast to ignore padding items (0)
-        target_mask = tf.to_float(tf.not_equal(current_target_sequence, 0)) # [B, T]
-        target_mask = tf.reshape(target_mask, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
+        target_mask = tf.to_float(tf.not_equal(current_target_sequence, 0)) # [B*T]
+        # target_mask = tf.reshape(target_mask, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
         self.loss = tf.reduce_sum(
-            -tf.log(tf.sigmoid(self.positive_logits) + 1e-24) * target_mask +
-            -tf.log(1 - tf.sigmoid(self.negative_logits) + 1e-24) * target_mask
+            (- tf.log(tf.sigmoid(self.positive_logits) + 1e-24) - tf.log(1 - tf.sigmoid(self.negative_logits) + 1e-24)) * target_mask
         ) / tf.reduce_sum(target_mask)
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         self.loss += sum(regularization_losses)
 
+        valid_mask = tf.to_float(tf.not_equal(current_valid_sequences, 0)) # [B*T]
+        self.valid_loss = tf.reduce_sum(
+            (- tf.log(tf.sigmoid(self.valid_logits) + 1e-24) - tf.log(1 - tf.sigmoid(self.negative_logits) + 1e-24)) * valid_mask
+        ) / tf.reduce_sum(valid_mask)
+        self.valid_loss += sum(regularization_losses)
+        
         tf.summary.scalar('loss', self.loss)
         self.auc = tf.reduce_sum(
             ((tf.sign(self.positive_logits - self.negative_logits) + 1) / 2) * target_mask

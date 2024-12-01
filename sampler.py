@@ -9,10 +9,22 @@ def random_neqative(low, high, positive_item):
     return negative_item
 
 class TrainingSamplerWorker(Process):
-    def __init__(self, training_sequence, usernum, itemnum, batch_size, max_sequence_length, result_queue, random_seed, *args, **kwargs):
+    def __init__(
+            self, 
+            training_sequence, 
+            validation_sequence,
+            usernum, 
+            itemnum, 
+            batch_size, 
+            max_sequence_length, 
+            result_queue, 
+            random_seed, 
+            *args, **kwargs
+        ):
         super(TrainingSamplerWorker, self).__init__(*args, **kwargs)
         
         self.training_sequence = training_sequence
+        self.validation_sequence = validation_sequence
         self.usernum = usernum
         self.itemnum = itemnum
         self.batch_size = batch_size
@@ -29,11 +41,12 @@ class TrainingSamplerWorker(Process):
 
         input_sequence = np.zeros([self.max_sequence_length], dtype=np.int32)
         target_sequence = np.zeros([self.max_sequence_length], dtype=np.int32)
+        validation_sequence = np.zeros([self.max_sequence_length], dtype=np.int32)
         negative_sequence = np.zeros([self.max_sequence_length], dtype=np.int32)
-        next_item = self.training_sequence[uid][-1]
-        current_idx = self.max_sequence_length - 1 # last idx in an array of length max_sequence_length
 
         positive_item_set = set(self.training_sequence[uid])
+        next_item = self.training_sequence[uid][-1]
+        current_idx = self.max_sequence_length - 1 # last idx in an array of length max_sequence_length
         for current_item in reversed(self.training_sequence[uid][:-1]):
             input_sequence[current_idx] = current_item
             target_sequence[current_idx] = next_item
@@ -42,7 +55,13 @@ class TrainingSamplerWorker(Process):
             current_idx -= 1
             if current_idx == -1: break
 
-        return (uid, input_sequence, target_sequence, negative_sequence)
+        current_idx = self.max_sequence_length - 1
+        for current_item in reversed(self.validation_sequence[uid]):
+            validation_sequence[current_idx] = current_item
+            current_idx -= 1
+            if current_idx == -1: break
+
+        return (uid, input_sequence, target_sequence, validation_sequence, negative_sequence)
 
     def run(self):
         np.random.seed(self.random_seed)
@@ -151,6 +170,7 @@ class DatasetSampler(object):
             if mode == "training":
                 new_worker = TrainingSamplerWorker(
                     training_sequence=training_sequence,
+                    validation_sequence=validation_sequence,
                     usernum=usernum,
                     itemnum=itemnum,
                     batch_size=batch_size,
