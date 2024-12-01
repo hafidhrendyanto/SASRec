@@ -119,11 +119,11 @@ class Model():
             tf.summary.scalar('test_auc', self.auc)
 
         # Prediction Specific Kernel DAG
-        self.test_item = tf.placeholder(tf.int32, shape=(None, 101))
-        test_item_embedding = tf.nn.embedding_lookup(item_embedding_table, self.test_item) # [B, 101, 50]
+        self.test_item = tf.placeholder(tf.int32, shape=(None, None))
+        test_item_embedding = tf.nn.embedding_lookup(item_embedding_table, self.test_item) # [B, T, 50]
         last_sequence_embedding = self.current_sequence_embedding[:, -1:, :] # [B, 1, 50] | user's interest embedding for the last timestamp ;)
-        self.test_logits = tf.matmul(last_sequence_embedding, tf.transpose(test_item_embedding, [0, 2, 1])) # [B, 1, 50] @ [B, 50,] => [B, 1, 101)]
-        self.test_logits = self.test_logits[:, -1, :] # [B, 101]
+        self.test_logits = tf.matmul(last_sequence_embedding, tf.transpose(test_item_embedding, [0, 2, 1])) # [B, 1, 50] @ [B, 50, T] => [B, 1, T)]
+        self.test_logits = self.test_logits[:, -1, :] # [B, T]
 
         self.merged = tf.summary.merge_all()
 

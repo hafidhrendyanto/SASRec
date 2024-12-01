@@ -10,6 +10,9 @@ from model import Model
 from tqdm import tqdm
 from util import *
 
+METRIC_EVALUATION = "exhaustive" # Literal[simple, exhaustive]
+# METRIC_EVALUATION = "simple" # Literal[simple, exhaustive]
+
 def str2bool(s):
     if s not in {'False', 'True'}:
         raise ValueError('Not a valid boolean string')
@@ -52,9 +55,18 @@ wandb.init(
         "attention_block_count": int(args.num_blocks),
         "latent_dimension": int(args.hidden_units),
         "batch_size": int(args.batch_size),
-        "positional_embedding": "learnable" # Literal[none, learnable, sine]
+        "positional_embedding": "learnable", # Literal[none, learnable, sine]
+        "metric_evaluation": METRIC_EVALUATION # Literal[simple, exhaustive]
     },
 )
+print(wandb.config)
+
+if METRIC_EVALUATION == "simple":
+    evaluate = simple_evaluate
+elif METRIC_EVALUATION == "exhaustive":
+    evaluate = exhaustive_evaluate
+else:
+    raise Exception()
 
 # define custom x-axis for epoch-wise logging.
 wandb.define_metric("epoch/epoch")
@@ -152,17 +164,33 @@ for epoch in tqdm(range(1, args.num_epochs + 1), total=args.num_epochs, ncols=70
     metric_aggregate["epoch/val_loss"] = valid_loss_aggregate / float(num_batch)
 
     if epoch % 5 == 0 or epoch in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
-        validation_metrics = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="validation")
-        test_metrics = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="test")
-        print(' | epoch:%d, valid (NDCG@10: %.4f, HR@10: %.4f), test (NDCG@10: %.4f, HR@10: %.4f)' % (epoch, validation_metrics[0], validation_metrics[1], test_metrics[0], test_metrics[1]))
-        log_file.write(str(validation_metrics) + ' ' + str(test_metrics) + '\n')
-        log_file.flush()
+        train_ndcg, train_hitrate, train_true_positives, train_actual_positives, train_dcg, train_icg  = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="train-validate")
+        val_ndcg, val_hitrate, val_true_positives, val_actual_positives, val_dcg, val_icg  = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="validation")
+        test_ndcg, test_hitrate, test_true_positives, test_actual_positives, test_dcg, test_icg = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="test")
+        print(' | epoch:%d, valid (NDCG@10: %.4f, HR@10: %.4f), test (NDCG@10: %.4f, HR@10: %.4f)' % (epoch, val_ndcg, val_hitrate, test_ndcg, test_hitrate))
+        # log_file.write(str(validation_metrics) + ' ' + str(test_metrics) + '\n')
+        # log_file.flush()
 
-        # TODO: add training hitrate and ndcg
-        metric_aggregate["epoch/val_hitrate@10"] = validation_metrics[1]
-        metric_aggregate["epoch/val_ndcg@10"] = validation_metrics[0]
-        metric_aggregate["epoch/test_hitrate@10"] = test_metrics[1]
-        metric_aggregate["epoch/test_ndcg@10"] = test_metrics[0]
+        metric_aggregate["epoch/true_positives@10"] = train_true_positives
+        metric_aggregate["epoch/actual_positives@10"] = train_actual_positives
+        metric_aggregate["epoch/hitrate@10"] = train_hitrate
+        metric_aggregate["epoch/dcg@10"] = train_dcg
+        metric_aggregate["epoch/icg@10"] = train_icg
+        metric_aggregate["epoch/ndcg@10"] = train_ndcg
+
+        metric_aggregate["epoch/val_true_positives@10"] = val_true_positives
+        metric_aggregate["epoch/val_actual_positives@10"] = val_actual_positives
+        metric_aggregate["epoch/val_hitrate@10"] = val_hitrate
+        metric_aggregate["epoch/val_dcg@10"] = val_dcg
+        metric_aggregate["epoch/val_icg@10"] = val_icg
+        metric_aggregate["epoch/val_ndcg@10"] = val_ndcg
+
+        metric_aggregate["epoch/test_true_positives@10"] = test_true_positives
+        metric_aggregate["epoch/test_actual_positives@10"] = test_actual_positives
+        metric_aggregate["epoch/test_hitrate@10"] = test_hitrate
+        metric_aggregate["epoch/test_dcg@10"] = test_dcg
+        metric_aggregate["epoch/test_icg@10"] = test_icg
+        metric_aggregate["epoch/test_ndcg@10"] = test_ndcg
 
     wandb.log(metric_aggregate)
 # except Exception as e:

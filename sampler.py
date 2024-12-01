@@ -91,7 +91,7 @@ class ValidationSamplerWorker(Process):
         ):
         super(ValidationSamplerWorker, self).__init__(*args, **kwargs)
         
-        if mode not in ["test", "validation"]:
+        if mode not in ["test", "validation", "train-validate"]:
             raise Exception("mode needs to be either test or validation")
 
         self.training_sequence = training_sequence
@@ -112,26 +112,35 @@ class ValidationSamplerWorker(Process):
         Sample a single sequence data for a single user
         """
         input_sequence = np.zeros([self.max_sequence_length], dtype=np.int32)
+        prediction_pool = np.zeros([self.max_sequence_length + self.negative_sample_length], dtype=np.int32)
         current_idx = self.max_sequence_length - 1
         if self.mode=="test":
+            training_sequence = self.training_sequence[uid]
+            prediction_pool[self.max_sequence_length - 1] = self.test_sequence[uid][0]
             input_sequence[current_idx] = self.validation_sequence[uid][0]
             current_idx -= 1
-        for current_item in reversed(self.training_sequence[uid]):
+        elif self.mode=="validation":
+            training_sequence = self.training_sequence[uid]
+            prediction_pool[self.max_sequence_length - 1] = self.validation_sequence[uid][0]
+        elif self.mode=="train-validate":
+            next_item = self.training_sequence[uid][-1]
+            training_sequence = self.training_sequence[uid][:-1]
+
+        for current_item in reversed(training_sequence):
             input_sequence[current_idx] = current_item
+
+            if self.mode=="train-validate":
+                prediction_pool[current_idx] = next_item
+                next_item = current_item
+
             current_idx -= 1
             if current_idx == -1: break
 
-        positive_item_set = set(self.training_sequence[uid])
+        positive_item_set = set(input_sequence)
         positive_item_set.add(0)
-        if self.mode=="test":
-            prediction_pool = [self.test_sequence[uid][0]]
-        else:
-            prediction_pool = [self.validation_sequence[uid][0]]
-        for _ in range(self.negative_sample_length):
+        for i in range(self.negative_sample_length):
             sampled_negative = random_neqative(1, self.itemnum + 1, positive_item_set)
-            prediction_pool.append(sampled_negative)
-
-        prediction_pool = np.array(prediction_pool)
+            prediction_pool[self.max_sequence_length + i] = sampled_negative
 
         return (uid, input_sequence, prediction_pool)
 
@@ -156,7 +165,7 @@ class ValidationSamplerWorker(Process):
 
 
 class DatasetSampler(object):
-    def __init__(self, training_sequence, validation_sequence=None, test_sequence=None, usernum=1000, itemnum=1000, batch_size=64, max_sequence_length=10, mode="training", nworkers=1):
+    def __init__(self, training_sequence, validation_sequence=None, test_sequence=None, usernum=1000, itemnum=1000, batch_size=64, max_sequence_length=10, negative_sample_length=100, mode="training", nworkers=1):
         if mode != "training" and (validation_sequence is None or test_sequence is None):
             raise Exception("If mode is not training then validation_sequence and test_sequence needs to be filled.")
         
@@ -188,7 +197,7 @@ class DatasetSampler(object):
                     itemnum=itemnum,
                     batch_size=batch_size,
                     max_sequence_length=max_sequence_length,
-                    negative_sample_length=100,
+                    negative_sample_length=negative_sample_length,
                     mode=mode,
                     result_queue=self.result_queue,
                     random_seed=np.random.randint(2e9)
