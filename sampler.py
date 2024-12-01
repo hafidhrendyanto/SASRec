@@ -2,7 +2,6 @@ import math
 import numpy as np
 from multiprocessing import Process, Queue
 
-
 def random_neqative(low, high, positive_item):
     negative_item = np.random.randint(low, high)
     while negative_item in positive_item:
@@ -55,7 +54,22 @@ class TrainingSamplerWorker(Process):
             self.result_queue.put(zip(*one_batch))
 
 class ValidationSamplerWorker(Process):
-    def __init__(self, training_sequence, validation_sequence, test_sequence, assigned_users, usernum, itemnum, batch_size, max_sequence_length, negative_sample_length, mode, result_queue, random_seed, *args, **kwargs):
+    def __init__(
+            self, 
+            training_sequence, 
+            validation_sequence, 
+            test_sequence, 
+            assigned_users, 
+            usernum, 
+            itemnum, 
+            batch_size, 
+            max_sequence_length, 
+            negative_sample_length, 
+            mode, 
+            result_queue,
+            random_seed, 
+            *args, **kwargs
+        ):
         super(ValidationSamplerWorker, self).__init__(*args, **kwargs)
         
         if mode not in ["test", "validation"]:
@@ -70,8 +84,8 @@ class ValidationSamplerWorker(Process):
         self.batch_size = batch_size
         self.max_sequence_length = max_sequence_length
         self.negative_sample_length = negative_sample_length
-        self.result_queue = result_queue
         self.mode = mode
+        self.result_queue = result_queue
         self.random_seed = random_seed
 
     def sample(self, uid):
@@ -166,8 +180,8 @@ class DatasetSampler(object):
             self.worker_pool[-1].daemon = True
             self.worker_pool[-1].start()
 
-    def next_batch(self, timeout=None):
-        return self.result_queue.get(timeout=None)
+    def next_batch(self, block=True, timeout=None):
+        return self.result_queue.get(block=block, timeout=timeout)
 
     def check_finish(self):
         still_running = False

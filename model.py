@@ -4,30 +4,31 @@ from modules import *
 class Model():
     def __init__(self, usernum, itemnum, args, reuse=None):
         self.is_training = tf.placeholder(tf.bool, shape=())
-        self.u = tf.placeholder(tf.int32, shape=(None))
-        self.input_seq = tf.placeholder(tf.int32, shape=(None, args.maxlen))
-        self.pos = tf.placeholder(tf.int32, shape=(None, args.maxlen))
-        self.neg = tf.placeholder(tf.int32, shape=(None, args.maxlen))
-        pos = self.pos
-        neg = self.neg
-        mask = tf.expand_dims(tf.to_float(tf.not_equal(self.input_seq, 0)), -1)
+        self.uid_vector = tf.placeholder(tf.int32, shape=(None)) # [B,]
+        self.input_sequences = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
+        self.target_sequence = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
+        self.negative_sample = tf.placeholder(tf.int32, shape=(None, args.maxlen)) # [B, T]
+        input_mask = tf.to_float(tf.not_equal(self.input_sequences, 0))[:, :, tf.newaxis] # [B, T, 1]
 
         with tf.variable_scope("SASRec", reuse=reuse):
-            # sequence embedding, item embedding table
-            self.seq, item_emb_table = embedding(self.input_seq,
-                                                 vocab_size=itemnum + 1,
-                                                 num_units=args.hidden_units,
-                                                 zero_pad=True,
-                                                 scale=True,
-                                                 l2_reg=args.l2_emb,
-                                                 scope="input_embeddings",
-                                                 with_t=True,
-                                                 reuse=reuse
-                                                 )
+            # User Sequence Embedding, Item Embedding Table
+            # [B, T, D], [vocab_size, D]
+            self.current_sequence_embedding, item_embedding_table = embedding(
+                self.input_sequences,
+                vocab_size=itemnum + 1,
+                num_units=args.hidden_units,
+                zero_pad=True,
+                scale=True,
+                l2_reg=args.l2_emb,
+                scope="input_embeddings",
+                with_t=True,
+                reuse=reuse
+            )
 
             # Positional Encoding
-            t, pos_emb_table = embedding(
-                tf.tile(tf.expand_dims(tf.range(tf.shape(self.input_seq)[1]), 0), [tf.shape(self.input_seq)[0], 1]),
+            # [B, T, D], [T, D]
+            positional_encoding, positional_encoding_table = embedding(
+                tf.tile(tf.expand_dims(tf.range(tf.shape(self.input_sequences)[1]), 0), [tf.shape(self.input_sequences)[0], 1]),
                 vocab_size=args.maxlen,
                 num_units=args.hidden_units,
                 zero_pad=False,
@@ -37,75 +38,67 @@ class Model():
                 reuse=reuse,
                 with_t=True
             )
-            self.seq += t
+            self.current_sequence_embedding += positional_encoding # [B, T, D]
 
-            # Dropout
-            self.seq = tf.layers.dropout(self.seq,
-                                         rate=args.dropout_rate,
-                                         training=tf.convert_to_tensor(self.is_training))
-            self.seq *= mask
+            # Dropout for the Input Layer
+            self.current_sequence_embedding = tf.layers.dropout(
+                self.current_sequence_embedding,
+                rate=args.dropout_rate,
+                training=tf.convert_to_tensor(self.is_training)
+            )
+            self.current_sequence_embedding *= input_mask # [B, T, D] * [B, T, 1] => [B, T, D]
 
-            # Build blocks
-
+            # Build Transformer Blocks
             for i in range(args.num_blocks):
                 with tf.variable_scope("num_blocks_%d" % i):
-
                     # Self-attention
-                    self.seq = multihead_attention(queries=normalize(self.seq),
-                                                   keys=self.seq,
-                                                   num_units=args.hidden_units,
-                                                   num_heads=args.num_heads,
-                                                   dropout_rate=args.dropout_rate,
-                                                   is_training=self.is_training,
-                                                   causality=True,
-                                                   scope="self_attention")
+                    self.current_sequence_embedding = multihead_attention(
+                        queries=normalize(self.current_sequence_embedding),
+                        keys=self.current_sequence_embedding,
+                        num_units=args.hidden_units,
+                        num_heads=args.num_heads,
+                        dropout_rate=args.dropout_rate,
+                        is_training=self.is_training,
+                        causality=True,
+                        scope="self_attention"
+                    )
 
                     # Feed forward
-                    self.seq = feedforward(normalize(self.seq), num_units=[args.hidden_units, args.hidden_units],
-                                           dropout_rate=args.dropout_rate, is_training=self.is_training)
-                    self.seq *= mask
+                    self.current_sequence_embedding = feedforward(
+                        normalize(self.current_sequence_embedding), 
+                        num_units=[args.hidden_units, args.hidden_units],
+                        dropout_rate=args.dropout_rate, 
+                        is_training=self.is_training
+                    )
+                    self.current_sequence_embedding *= input_mask
+            self.current_sequence_embedding = normalize(self.current_sequence_embedding)
 
-            self.seq = normalize(self.seq)
-
-        pos = tf.reshape(pos, [tf.shape(self.input_seq)[0] * args.maxlen])
-        neg = tf.reshape(neg, [tf.shape(self.input_seq)[0] * args.maxlen])
-        pos_emb = tf.nn.embedding_lookup(item_emb_table, pos)
-        neg_emb = tf.nn.embedding_lookup(item_emb_table, neg)
-        seq_emb = tf.reshape(self.seq, [tf.shape(self.input_seq)[0] * args.maxlen, args.hidden_units])
-
-        self.test_item = tf.placeholder(tf.int32, shape=(None, 101))
-        test_item_emb = tf.nn.embedding_lookup(item_emb_table, self.test_item) # (bathc, 101, 50)
-        # print("KAPOW!")
-        # print(self.seq)
-        # print(seq_emb)
-        # print(test_item_emb)
-        last_seq_emb = self.seq[:, -1:, :] # (batch, 1, 50)
-        self.test_logits = tf.matmul(last_seq_emb, tf.transpose(test_item_emb, [0, 2, 1])) # (batch, 1, 101)
-        self.test_logits = self.test_logits[:, -1, :] # (batch, 101)
-        # self.test_logits = tf.matmul(seq_emb, tf.transpose(test_item_emb))
-        # print(self.test_logits)
-        # self.test_logits = tf.reshape(self.test_logits, [tf.shape(self.input_seq)[0], args.maxlen, 101])
-        # print(self.test_logits)
-        # self.test_logits = self.test_logits[:, -1, :]
-        # print(self.test_logits)
+        current_target_sequence = self.target_sequence # [B, T]
+        current_negative_sample = self.negative_sample # [B, T]
+        current_target_sequence = tf.reshape(current_target_sequence, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
+        current_negative_sample = tf.reshape(current_negative_sample, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
+        target_embedding = tf.nn.embedding_lookup(item_embedding_table, current_target_sequence) # [B*T, D]
+        negative_embedding = tf.nn.embedding_lookup(item_embedding_table, current_negative_sample) # [B*T, D]
+        sequence_embedding = tf.reshape(self.current_sequence_embedding, [tf.shape(self.input_sequences)[0] * args.maxlen, args.hidden_units]) # flatten [B, T, D] to [B*T, D]
 
         # prediction layer
-        self.pos_logits = tf.reduce_sum(pos_emb * seq_emb, -1)
-        self.neg_logits = tf.reduce_sum(neg_emb * seq_emb, -1)
+        self.positive_logits = tf.reduce_sum(target_embedding * sequence_embedding, -1) # reduce_sum([B, T, D]) => [B, T]
+        self.negative_logits = tf.reduce_sum(negative_embedding * sequence_embedding, -1) # reduce_sum([B, T, D]) => [B, T]
 
-        # ignore padding items (0)
-        istarget = tf.reshape(tf.to_float(tf.not_equal(pos, 0)), [tf.shape(self.input_seq)[0] * args.maxlen])
+        # Create target_mast to ignore padding items (0)
+        target_mask = tf.to_float(tf.not_equal(current_target_sequence, 0)) # [B, T]
+        target_mask = tf.reshape(target_mask, [tf.shape(self.input_sequences)[0] * args.maxlen]) # flatten [B, T] to [B*T,]
         self.loss = tf.reduce_sum(
-            - tf.log(tf.sigmoid(self.pos_logits) + 1e-24) * istarget -
-            tf.log(1 - tf.sigmoid(self.neg_logits) + 1e-24) * istarget
-        ) / tf.reduce_sum(istarget)
-        reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        self.loss += sum(reg_losses)
+            -tf.log(tf.sigmoid(self.positive_logits) + 1e-24) * target_mask +
+            -tf.log(1 - tf.sigmoid(self.negative_logits) + 1e-24) * target_mask
+        ) / tf.reduce_sum(target_mask)
+        regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        self.loss += sum(regularization_losses)
 
         tf.summary.scalar('loss', self.loss)
         self.auc = tf.reduce_sum(
-            ((tf.sign(self.pos_logits - self.neg_logits) + 1) / 2) * istarget
-        ) / tf.reduce_sum(istarget)
+            ((tf.sign(self.positive_logits - self.negative_logits) + 1) / 2) * target_mask
+        ) / tf.reduce_sum(target_mask)
 
         if reuse is None:
             tf.summary.scalar('auc', self.auc)
@@ -115,8 +108,17 @@ class Model():
         else:
             tf.summary.scalar('test_auc', self.auc)
 
+        # Prediction Specific Kernel DAG
+        self.test_item = tf.placeholder(tf.int32, shape=(None, 101))
+        test_item_embedding = tf.nn.embedding_lookup(item_embedding_table, self.test_item) # [B, 101, 50]
+        last_sequence_embedding = self.current_sequence_embedding[:, -1:, :] # [B, 1, 50] | user's interest embedding for the last timestamp ;)
+        self.test_logits = tf.matmul(last_sequence_embedding, tf.transpose(test_item_embedding, [0, 2, 1])) # [B, 1, 50] @ [B, 50,] => [B, 1, 101)]
+        self.test_logits = self.test_logits[:, -1, :] # [B, 101]
+
         self.merged = tf.summary.merge_all()
 
-    def predict(self, sess, u, seq, item_idx):
-        return sess.run(self.test_logits,
-                        {self.u: u, self.input_seq: seq, self.test_item: item_idx, self.is_training: False})
+    def predict(self, kernel_session, uid_list, input_sequences, prediction_pools):
+        return kernel_session.run(
+            self.test_logits, 
+            {self.uid_vector: uid_list, self.input_sequences: input_sequences, self.test_item: prediction_pools, self.is_training: False}
+        )

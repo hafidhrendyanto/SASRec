@@ -4,6 +4,7 @@ import random
 import numpy as np
 from collections import defaultdict
 from multiprocessing import Process, Queue
+from multiprocessing import queues
 
 from sampler import DatasetSampler
 
@@ -56,30 +57,25 @@ def evaluate(model, dataset, batch_size, max_sequence_length, kernel_session, mo
         batch_size=batch_size,
         max_sequence_length=max_sequence_length,
         mode=mode,
-        nworkers=5
+        nworkers=16
     )
 
     while not sampler.check_finish():
-        uid_list, input_sequences, prediction_pools = sampler.next_batch()
-        score = model.predict(kernel_session, uid_list, input_sequences, prediction_pools) # (batch_size, maxlen) for both inputh_sequences and prediction_pools
-        inverse_score = -score
+        try:
+            uid_list, input_sequences, prediction_pools = sampler.next_batch(block=False)
+            score = model.predict(kernel_session, uid_list, input_sequences, prediction_pools) # (batch_size, maxlen) for both inputh_sequences and prediction_pools
+            inverse_score = -score
 
-        # argsort twice give you rank
-        item_rankings = inverse_score.argsort().argsort()
-        positive_item_rankings = item_rankings[:, 0]
+            # argsort twice give you rank
+            item_rankings = inverse_score.argsort().argsort()
+            positive_item_rankings = item_rankings[:, 0]
+            positive_item_rankings = np.array(positive_item_rankings)
 
-        for positive_item_rank in positive_item_rankings:
-            validated_user += 1
-
-            if positive_item_rank < 10:
-                disounted_cumulative_gains += 1 / np.log2(positive_item_rank + 2)
-                true_positives += 1
-            if validated_user % 100 == 0:
-                sys.stdout.write('. ')
-                sys.stdout.flush()
-
-        if validated_user >= usernum:
-            break
+            validated_user += len(positive_item_rankings)
+            true_positives += np.sum(positive_item_rankings < 10)
+            disounted_cumulative_gains += np.sum((1 / np.log2(positive_item_rankings + 2)) * (positive_item_rankings < 10))
+        except queues.Empty:
+            pass
 
     # NDCG = DCG / IDCG. 
     # Since we only have one positive sample and ideally it is ranked at the top then IDCG = # All Positive Sample = # Sequences = # Users
@@ -144,9 +140,6 @@ def original_evaluate(model, dataset, batch_size, max_sequence_length, kernel_se
         if positive_item_rank < 10:
             disounted_cumulative_gains += 1 / np.log2(positive_item_rank + 2)
             true_positives += 1
-        if validated_user % 100 == 0:
-            sys.stdout.write('. ')
-            sys.stdout.flush()
 
     # NDCG = DCG / IDCG. 
     # Since we only have one positive sample and ideally it is ranked at the top then IDCG = # All Positive Sample = # Sequences = # Users

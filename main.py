@@ -108,7 +108,7 @@ log_file = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
 config.allow_soft_placement = True
-sess = tf.Session(config=config)
+kernel_session = tf.Session(config=config)
 
 sampler = DatasetSampler(
     training_sequence=training_sequence, 
@@ -116,56 +116,48 @@ sampler = DatasetSampler(
     itemnum=itemnum, 
     batch_size=args.batch_size, 
     max_sequence_length=args.maxlen, 
-    nworkers=3
+    nworkers=16
 )
 model = Model(usernum, itemnum, args)
-sess.run(tf.initialize_all_variables())
+kernel_session.run(tf.initialize_all_variables())
 
-T = 0.0
-t0 = time.time()
+# try:
+for epoch in tqdm(range(1, args.num_epochs + 1), total=args.num_epochs, ncols=70, unit='epoch', leave=True):
+    metric_aggregate = {
+        "epoch/epoch": epoch - 1, # reduce by 1 to standardize with tf2's convention
+        "epoch/learning_rate": learning_rate
+    }
 
-try:
-    for epoch in range(1, args.num_epochs + 1):
-        metric_aggregate = {
-            "epoch/epoch": epoch - 1, # reduce by 1 to standardize with tf2's convention
-            "epoch/learning_rate": learning_rate
-        }
+    for step in range(num_batch):
+        user_ids, input_sequences, target_sequence, negative_sample = sampler.next_batch()
+        auc, loss, _ = kernel_session.run(
+            [model.auc, model.loss, model.train_op],
+            {model.uid_vector: user_ids, model.input_sequences: input_sequences, model.target_sequence: target_sequence, model.negative_sample: negative_sample, model.is_training: True}
+        )
 
-        for step in tqdm(range(num_batch), total=num_batch, ncols=70, leave=True, unit='batch'):
-            u, seq, pos, neg = sampler.next_batch()
-            auc, loss, _ = sess.run([model.auc, model.loss, model.train_op],
-                                    {model.u: u, model.input_seq: seq, model.pos: pos, model.neg: neg,
-                                        model.is_training: True})
+    metric_aggregate["epoch/loss"] = float(loss)
+    # TODO: add validation loss
 
-        metric_aggregate["epoch/loss"] = float(loss)
-        # TODO: add validation loss
+    if epoch % 5 == 0 or epoch in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+        validation_metrics = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="validation")
+        test_metrics = evaluate(model, dataset, args.batch_size, args.maxlen, kernel_session, mode="test")
+        print(' | epoch:%d, valid (NDCG@10: %.4f, HR@10: %.4f), test (NDCG@10: %.4f, HR@10: %.4f)' % (epoch, validation_metrics[0], validation_metrics[1], test_metrics[0], test_metrics[1]))
+        log_file.write(str(validation_metrics) + ' ' + str(test_metrics) + '\n')
+        log_file.flush()
 
-        if epoch % 5 == 0 or epoch in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
-            t1 = time.time() - t0
-            T += t1
-            sys.stdout.write('Evaluating')
-            t_valid = evaluate(model, dataset, args.batch_size, args.maxlen, sess, mode="validation")
-            t_test = evaluate(model, dataset, args.batch_size, args.maxlen, sess, mode="test")
-            print('epoch:%d, time: %f(s), valid (NDCG@10: %.4f, HR@10: %.4f), test (NDCG@10: %.4f, HR@10: %.4f)' % (
-            epoch, T, t_valid[0], t_valid[1], t_test[0], t_test[1]))
+        # TODO: add training hitrate and ndcg
+        metric_aggregate["epoch/val_hitrate@10"] = validation_metrics[1]
+        metric_aggregate["epoch/val_ndcg@10"] = validation_metrics[0]
+        metric_aggregate["epoch/test_hitrate@10"] = test_metrics[1]
+        metric_aggregate["epoch/test_ndcg@10"] = test_metrics[0]
 
-            log_file.write(str(t_valid) + ' ' + str(t_test) + '\n')
-            log_file.flush()
-            t0 = time.time()
+    wandb.log(metric_aggregate)
+# except Exception as e:
+#     sampler.close()
+#     log_file.close()
 
-            # TODO: add training hitrate and ndcg
-            metric_aggregate["epoch/val_hitrate@10"] = t_valid[1]
-            metric_aggregate["epoch/val_ndcg@10"] = t_valid[0]
-            metric_aggregate["epoch/test_hitrate@10"] = t_test[1]
-            metric_aggregate["epoch/test_ndcg@10"] = t_test[0]
-
-        wandb.log(metric_aggregate)
-except Exception as e:
-    sampler.close()
-    log_file.close()
-
-    print(e)
-    exit(1)
+#     print(e)
+#     exit(1)
 
 log_file.close()
 sampler.close()
