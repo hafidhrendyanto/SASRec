@@ -120,10 +120,10 @@ class Model():
 
         # Prediction Specific Kernel DAG
         self.test_item = tf.placeholder(tf.int32, shape=(None, None))
-        test_item_embedding = tf.nn.embedding_lookup(item_embedding_table, self.test_item) # [B, T, 50]
-        last_sequence_embedding = self.current_sequence_embedding[:, -1:, :] # [B, 1, 50] | user's interest embedding for the last timestamp ;)
-        self.test_logits = tf.matmul(last_sequence_embedding, tf.transpose(test_item_embedding, [0, 2, 1])) # [B, 1, 50] @ [B, 50, T] => [B, 1, T)]
-        self.test_logits = self.test_logits[:, -1, :] # [B, T]
+        test_item_embedding = tf.nn.embedding_lookup(item_embedding_table, self.test_item) # [B, Z, D]
+        last_sequence_embedding = self.current_sequence_embedding[:, -1:, :] # [B, 1, D] | user's interest embedding for the last timestamp ;)
+        self.test_logits = tf.matmul(last_sequence_embedding, tf.transpose(test_item_embedding, [0, 2, 1])) # [B, 1, D] @ [B, D, Z] => [B, 1, Z)]
+        self.test_logits = self.test_logits[:, -1, :] # [B, Z]
 
         self.merged = tf.summary.merge_all()
 
